@@ -338,6 +338,7 @@ export type Platform =
   | 'macOS'
   | 'mac-catalyst'
   | 'visionOS'
+  | 'iphoneos'
 
 export type Arch = 'arm64' | 'x86_64' | 'i386'
 
