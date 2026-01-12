@@ -389,6 +389,8 @@ export async function getDestination(
       return ['-destination', `platform=macOS,variant=Mac Catalyst`]
     case 'iOS-simulator':
       return ['-destination', `generic/platform=iOS Simulator`]
+    case 'iphoneos':
+      return ['-destination', `generic/platform=iPhone`]
     case undefined:
       if (semver.gte(xcodeVersion, '13.0.0')) {
         //FIXME should parse output from xcodebuild -showdestinations
