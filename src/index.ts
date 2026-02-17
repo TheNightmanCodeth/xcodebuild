@@ -66,17 +66,7 @@ async function main() {
     // Track existing certificates before build
     if (apiKey) {
       core.info('Tracking API-created certificates')
-      const keyId = core.getInput('authentication-key-id')
-      const keyIssuerId = core.getInput('authentication-key-issuer-id')
-      if (keyId && keyIssuerId && keyPath) {
-        await trackApiCreatedCertificates(keyPath, keyId, keyIssuerId)
-      } else {
-        let msg = 'Missing:'
-        if (!keyId) msg += ' keyId'
-        if (!keyIssuerId) msg += ' keyIssuerId'
-        if (!keyPath) msg += ' keyPath'
-        core.warning(msg)
-      }
+      await trackApiCreatedCertificates()
     }
   }
 
@@ -88,18 +78,7 @@ async function main() {
   // Track new certificates after build
   if (apiKey) {
     core.info('Tracking API-created certificates')
-    const keyId = core.getInput('authentication-key-id')
-    const keyIssuerId = core.getInput('authentication-key-issuer-id')
-    const keyPath = core.getState('keyPath')
-    if (keyId && keyIssuerId && keyPath) {
-      await trackApiCreatedCertificates(keyPath, keyId, keyIssuerId)
-    } else {
-      let msg = 'Missing:'
-      if (!keyId) msg += ' keyId'
-      if (!keyIssuerId) msg += ' keyIssuerId'
-      if (!keyPath) msg += ' keyPath'
-      core.warning(msg)
-    }
+    await trackApiCreatedCertificates()
   }
 
   if (core.getInput('upload-logs') == 'always') {
