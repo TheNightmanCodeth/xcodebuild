@@ -545,7 +545,50 @@ export async function createAppStoreConnectApiKeyFile(
   return keyPath
 }
 
-export function deleteAppStoreConnectApiKeyFile() {
+export async function trackApiCreatedCertificates(
+  keyPath: string,
+  keyId: string,
+  keyIssuerId: string
+): Promise<void> {
+  try {
+    const out = await exec('xcrun', [
+      'altool',
+      '--list-certificates',
+      '--apiKey',
+      keyId,
+      '--apiIssuer',
+      keyIssuerId,
+      '--output-format',
+      'json',
+    ])
+    const certs = parseJSON<{
+      certificates: Array<{ id: string; name: string }>
+    }>(out)
+    const apiCerts = certs.certificates.filter((c) =>
+      c.name.includes('Created via API')
+    )
+    const certIds = apiCerts.map((c) => c.id)
+
+    const existingIds = core.getState('apiCertificateIdsBefore')
+    if (existingIds) {
+      // Track only new certificates created during this run
+      const before: string[] = JSON.parse(existingIds)
+      const newCerts = certIds.filter((id) => !before.includes(id))
+      if (newCerts.length > 0) {
+        core.saveState('apiCertificateIds', JSON.stringify(newCerts))
+      }
+    } else {
+      // First call - track existing certificates
+      core.saveState('apiCertificateIdsBefore', JSON.stringify(certIds))
+    }
+  } catch (error) {
+    core.warning('Failed to track API-created certificates: ' + error)
+  }
+}
+
+export async function deleteAppStoreConnectApiKeyFile() {
+  await deleteApiCreatedCertificates()
+
   const keyPath = core.getState('keyPath')
   if (keyPath && fs.existsSync(keyPath)) {
     core.info('Deleting App Store Connect API key file')
@@ -553,6 +596,34 @@ export function deleteAppStoreConnectApiKeyFile() {
       fs.unlinkSync(keyPath)
     } catch (error) {
       core.error('Failed to delete App Store Connect API key file: ' + error)
+    }
+  }
+}
+
+async function deleteApiCreatedCertificates(): Promise<void> {
+  const certIds = core.getState('apiCertificateIds')
+  const keyPath = core.getState('keyPath')
+  const keyId = core.getState('apiKeyId')
+  const keyIssuerId = core.getState('apiKeyIssuerId')
+
+  if (!certIds || !keyPath || !keyId || !keyIssuerId) return
+
+  core.info('Deleting API-created certificates')
+  const ids: string[] = JSON.parse(certIds)
+
+  for (const id of ids) {
+    try {
+      await exec('xcrun', [
+        'altool',
+        '--revoke-certificate',
+        id,
+        '--apiKey',
+        keyId,
+        '--apiIssuer',
+        keyIssuerId,
+      ])
+    } catch (error) {
+      core.error(`Failed to delete certificate ${id}: ${error}`)
     }
   }
 }

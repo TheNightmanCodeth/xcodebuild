@@ -12,6 +12,7 @@ import {
   getIdentity,
   getSchemeFromPackage,
   spawn,
+  trackApiCreatedCertificates,
   verbosity,
   xcselect,
 } from './lib'
@@ -58,10 +59,30 @@ async function main() {
 
   const apiKey = await getAppStoreConnectApiKey()
 
+  // Track existing certificates before build
+  if (apiKey) {
+    const keyId = core.getInput('authentication-key-id')
+    const keyIssuerId = core.getInput('authentication-key-issuer-id')
+    const keyPath = core.getState('keyPath')
+    if (keyId && keyIssuerId && keyPath) {
+      await trackApiCreatedCertificates(keyPath, keyId, keyIssuerId)
+    }
+  }
+
   await configureKeychain()
   await configureProvisioningProfiles()
 
   await build(await getScheme(workspace), workspace, arch, archivePath)
+
+  // Track new certificates after build
+  if (apiKey) {
+    const keyId = core.getInput('authentication-key-id')
+    const keyIssuerId = core.getInput('authentication-key-issuer-id')
+    const keyPath = core.getState('keyPath')
+    if (keyId && keyIssuerId && keyPath) {
+      await trackApiCreatedCertificates(keyPath, keyId, keyIssuerId)
+    }
+  }
 
   if (core.getInput('upload-logs') == 'always') {
     await uploadLogs()
@@ -146,6 +167,11 @@ async function main() {
     core.setSecret(keyIssuerId)
 
     const keyPath = await createAppStoreConnectApiKeyFile(key)
+
+    // Store API key details for cleanup
+    core.saveState('apiKeyId', keyId)
+    core.saveState('apiKeyIssuerId', keyIssuerId)
+
     return [
       '-allowProvisioningDeviceRegistration',
       '-allowProvisioningUpdates',
@@ -263,8 +289,8 @@ async function main() {
   }
 }
 
-function post() {
-  deleteAppStoreConnectApiKeyFile()
+async function post() {
+  await deleteAppStoreConnectApiKeyFile()
   deleteKeychain()
   deleteProvisioningProfiles()
 }
@@ -275,7 +301,7 @@ async function run() {
   // state in `main` for `post` to read.
   const isPost = Boolean(core.getState('isPost'))
   if (isPost) {
-    post()
+    await post()
     return
   } else {
     core.saveState('isPost', true)
