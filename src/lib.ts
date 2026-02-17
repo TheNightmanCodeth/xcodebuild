@@ -571,11 +571,15 @@ export async function trackApiCreatedCertificates(
 
     const existingIds = core.getState('apiCertificateIdsBefore')
     if (existingIds) {
+      core.info('Got existingIds: ' + existingIds.length)
       // Track only new certificates created during this run
       const before: string[] = JSON.parse(existingIds)
       const newCerts = certIds.filter((id) => !before.includes(id))
       if (newCerts.length > 0) {
         core.saveState('apiCertificateIds', JSON.stringify(newCerts))
+      } else {
+        core.warning('newCerts was empty!')
+        core.warning(out)
       }
     } else {
       // First call - track existing certificates
@@ -606,7 +610,14 @@ async function deleteApiCreatedCertificates(): Promise<void> {
   const keyId = core.getState('apiKeyId')
   const keyIssuerId = core.getState('apiKeyIssuerId')
 
-  if (!certIds || !keyPath || !keyId || !keyIssuerId) return
+  if (!certIds || !keyPath || !keyId || !keyIssuerId) {
+    let str = 'Missing:'
+    if (!certIds) str += ' certIds'
+    if (!keyPath) str += ' keyPath'
+    if (!keyId) str += ' keyId'
+    if (!keyIssuerId) str += ' keyIssuerId'
+    core.warning(str)
+  }
 
   core.info('Deleting API-created certificates')
   const ids: string[] = JSON.parse(certIds)
