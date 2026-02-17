@@ -57,22 +57,26 @@ async function main() {
     generateXcodeproj(reason)
   }
 
-  const apiKey = await getAppStoreConnectApiKey()
+  let apiKey: string[] | undefined
+  const key = core.getInput('authentication-key-base64')
+  if (key) {
+    const keyPath = await createAppStoreConnectApiKeyFile(key)
+    apiKey = await getAppStoreConnectApiKey(keyPath)
 
-  // Track existing certificates before build
-  if (apiKey) {
-    core.info('Tracking API-created certificates')
-    const keyId = core.getInput('authentication-key-id')
-    const keyIssuerId = core.getInput('authentication-key-issuer-id')
-    const keyPath = core.getState('keyPath')
-    if (keyId && keyIssuerId && keyPath) {
-      await trackApiCreatedCertificates(keyPath, keyId, keyIssuerId)
-    } else {
-      let msg = 'Missing:'
-      if (!keyId) msg += ' keyId'
-      if (!keyIssuerId) msg += ' keyIssuerId'
-      if (!keyPath) msg += ' keyPath'
-      core.warning(msg)
+    // Track existing certificates before build
+    if (apiKey) {
+      core.info('Tracking API-created certificates')
+      const keyId = core.getInput('authentication-key-id')
+      const keyIssuerId = core.getInput('authentication-key-issuer-id')
+      if (keyId && keyIssuerId && keyPath) {
+        await trackApiCreatedCertificates(keyPath, keyId, keyIssuerId)
+      } else {
+        let msg = 'Missing:'
+        if (!keyId) msg += ' keyId'
+        if (!keyIssuerId) msg += ' keyIssuerId'
+        if (!keyPath) msg += ' keyPath'
+        core.warning(msg)
+      }
     }
   }
 
@@ -155,7 +159,7 @@ async function main() {
     }
   }
 
-  async function getAppStoreConnectApiKey(): Promise<string[] | undefined> {
+  function getAppStoreConnectApiKey(keyPath: string): string[] | undefined {
     const key = core.getInput('authentication-key-base64')
     if (!key) return
 
@@ -179,8 +183,6 @@ async function main() {
     core.setSecret(key)
     core.setSecret(keyId)
     core.setSecret(keyIssuerId)
-
-    const keyPath = await createAppStoreConnectApiKeyFile(key)
 
     // Store API key details for cleanup
     core.saveState('apiKeyId', keyId)
