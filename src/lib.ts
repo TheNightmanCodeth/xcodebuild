@@ -545,62 +545,6 @@ export async function createAppStoreConnectApiKeyFile(
   return keyPath
 }
 
-export async function trackApiCreatedCertificates(): Promise<void> {
-  try {
-    core.info('[DEBUG] trackApiCreatedCertificates called')
-
-    const out = await exec('security', [
-      'find-identity',
-      '-v',
-      '-p',
-      'codesigning',
-    ])
-
-    core.info(
-      `[DEBUG] security find-identity output length: ${out.length} chars`
-    )
-
-    // Parse output like: "1) ABC123... "Apple Development: Name (TEAM)" (CSSMERR_TP_CERT_EXPIRED)"
-    const lines = out.split('\n').filter((line) => line.match(/^\s*\d+\)/))
-    core.info(`[DEBUG] Found ${lines.length} certificate lines`)
-
-    const certIds = lines
-      .map((line) => {
-        const match = line.match(/\)\s+([A-F0-9]+)/)
-        return match ? match[1] : null
-      })
-      .filter((id): id is string => id !== null)
-
-    core.info(`[DEBUG] Parsed ${certIds.length} certificate IDs`)
-
-    const existingIds = core.getState('apiCertificateIdsBefore')
-    core.info(`[DEBUG] existingIds state: ${existingIds || 'undefined'}`)
-
-    if (existingIds) {
-      const before: string[] = JSON.parse(existingIds)
-      core.info(`[DEBUG] Before: ${before.length} certificates`)
-      core.info(`[DEBUG] Now: ${certIds.length} certificates`)
-
-      const newCerts = certIds.filter((id) => !before.includes(id))
-      core.info(`[DEBUG] New certificates detected: ${newCerts.length}`)
-
-      if (newCerts.length > 0) {
-        core.info(`[DEBUG] Saving new certificate IDs: ${newCerts.join(', ')}`)
-        core.saveState('apiCertificateIds', JSON.stringify(newCerts))
-      } else {
-        core.warning('[DEBUG] No new certificates detected')
-      }
-    } else {
-      core.info(
-        `[DEBUG] First call - saving baseline of ${certIds.length} certificates`
-      )
-      core.saveState('apiCertificateIdsBefore', JSON.stringify(certIds))
-    }
-  } catch (error) {
-    core.warning('Failed to track API-created certificates: ' + error)
-  }
-}
-
 export async function deleteAppStoreConnectApiKeyFile() {
   await deleteApiCreatedCertificates()
 
@@ -616,43 +560,80 @@ export async function deleteAppStoreConnectApiKeyFile() {
 }
 
 async function deleteApiCreatedCertificates(): Promise<void> {
-  core.info('[DEBUG] deleteApiCreatedCertificates called')
-
-  const certIds = core.getState('apiCertificateIds')
   const keyPath = core.getState('keyPath')
   const keyId = core.getState('apiKeyId')
   const keyIssuerId = core.getState('apiKeyIssuerId')
 
-  core.info(`[DEBUG] certIds state: ${certIds || 'undefined'}`)
-  core.info(`[DEBUG] keyPath state: ${keyPath || 'undefined'}`)
-  core.info(`[DEBUG] keyId state: ${keyId || 'undefined'}`)
-  core.info(`[DEBUG] keyIssuerId state: ${keyIssuerId || 'undefined'}`)
-
-  if (!certIds) {
-    core.warning('[DEBUG] No certificate IDs found, skipping deletion')
+  if (!keyPath || !keyId || !keyIssuerId) {
+    core.warning('No keyPath, keyId or keyIssuerId found! (568)')
     return
   }
 
-  const ids: string[] = JSON.parse(certIds)
-  core.info(`[DEBUG] Parsed ${ids.length} certificate IDs: ${ids.join(', ')}`)
+  try {
+    // Find certificate with "Created via API" in the name
+    const out = await exec('security', [
+      'find-identity',
+      '-v',
+      '-p',
+      'codesigning',
+    ])
+    const lines = out.split('\n')
 
-  // Delete from local keychain
-  core.info('Deleting certificates from keychain')
-  for (const id of ids) {
-    try {
-      core.info(`[DEBUG] Attempting to delete certificate ${id} from keychain`)
-      await exec('security', ['delete-certificate', '-Z', id])
-      core.info(`[DEBUG] Successfully deleted certificate ${id} from keychain`)
-    } catch (error) {
-      core.error(`Failed to delete certificate ${id} from keychain: ${error}`)
+    let apiCertHash: string | null = null
+    for (const line of lines) {
+      if (line.includes('Created via API')) {
+        const match = line.match(/\)\s+([A-F0-9]+)/)
+        if (match) {
+          apiCertHash = match[1]
+          break
+        }
+      }
     }
-  }
 
-  // Revoke from App Store Connect if we have API credentials
-  if (keyPath && keyId && keyIssuerId) {
-    core.info('Revoking certificates from App Store Connect')
+    if (!apiCertHash) {
+      core.info('No API-created certificate found in keychain')
+      return
+    }
 
-    // Generate JWT token using the API key
+    core.info(`Found API-created certificate: ${apiCertHash}`)
+
+    // Get serial number from the certificate
+    const certInfo = await exec('security', [
+      'find-certificate',
+      '-Z',
+      apiCertHash,
+      '-p',
+    ])
+    const certPem = certInfo.match(
+      /-----BEGIN CERTIFICATE-----.+-----END CERTIFICATE-----/s
+    )?.[0]
+
+    if (!certPem) {
+      core.warning('Could not extract certificate PEM')
+      return
+    }
+
+    const serialInfo = await exec(
+      'openssl',
+      ['x509', '-noout', '-serial'],
+      undefined,
+      false
+    )
+    const serialMatch = serialInfo.match(/serial=([A-F0-9]+)/i)
+
+    if (!serialMatch) {
+      core.warning('Could not extract serial number')
+      return
+    }
+
+    const serialNumber = serialMatch[1]
+    core.info(`Certificate serial number: ${serialNumber}`)
+
+    // Delete from local keychain
+    await exec('security', ['delete-certificate', '-Z', apiCertHash])
+    core.info('Deleted certificate from keychain')
+
+    // Generate JWT token
     const header = Buffer.from(
       JSON.stringify({ alg: 'ES256', kid: keyId, typ: 'JWT' })
     ).toString('base64url')
@@ -666,54 +647,67 @@ async function deleteApiCreatedCertificates(): Promise<void> {
       })
     ).toString('base64url')
 
-    for (const id of ids) {
-      try {
-        core.info(
-          `[DEBUG] Attempting to revoke certificate ${id} from App Store Connect`
-        )
-
-        // Use openssl to sign the JWT
-        const message = `${header}.${payload}`
-        const result = spawnSync(
-          'openssl',
-          ['dgst', '-sha256', '-sign', keyPath, '-binary'],
-          { input: message }
-        )
-        if (result.error) {
-          core.error(`[DEBUG] OpenSSL error: ${result.error}`)
-          throw result.error
-        }
-        if (result.stderr.length > 0) {
-          core.warning(`[DEBUG] OpenSSL stderr: ${result.stderr.toString()}`)
-        }
-
-        const signature = result.stdout.toString('base64url')
-        const token = `${message}.${signature}`
-
-        core.info(`[DEBUG] Making DELETE request to App Store Connect API`)
-        const curlOutput = await exec('curl', [
-          '-X',
-          'DELETE',
-          '-w',
-          '\n%{http_code}',
-          `https://api.appstoreconnect.apple.com/v1/certificates/${id}`,
-          '-H',
-          `Authorization: Bearer ${token}`,
-        ])
-        core.info(`[DEBUG] API response: ${curlOutput}`)
-        core.info(
-          `[DEBUG] Successfully revoked certificate ${id} from App Store Connect`
-        )
-      } catch (error) {
-        core.error(
-          `Failed to revoke certificate ${id} from App Store Connect: ${error}`
-        )
+    const message = `${header}.${payload}`
+    const result = spawnSync(
+      'openssl',
+      ['dgst', '-sha256', '-sign', keyPath, '-binary'],
+      {
+        input: message,
       }
-    }
-  } else {
-    core.warning(
-      '[DEBUG] Missing API credentials, skipping App Store Connect revocation'
     )
+
+    if (result.error) {
+      core.error(`OpenSSL signing error: ${result.error}`)
+      return
+    }
+
+    const signature = result.stdout.toString('base64url')
+    const token = `${message}.${signature}`
+
+    // Get certificates from App Store Connect
+    const listOutput = await exec('curl', [
+      '-s',
+      'https://api.appstoreconnect.apple.com/v1/certificates',
+      '-H',
+      `Authorization: Bearer ${token}`,
+    ])
+
+    const apiResponse = JSON.parse(listOutput) as {
+      data: Array<{
+        id: string
+        attributes: { serialNumber: string; name: string }
+      }>
+    }
+
+    // Find matching certificate by serial number
+    const matchingCert = apiResponse.data.find((cert) => {
+      const apiSerial = cert.attributes.serialNumber
+        .replace(/:/g, '')
+        .toUpperCase()
+      return apiSerial === serialNumber.toUpperCase()
+    })
+
+    if (!matchingCert) {
+      core.warning('Could not find matching certificate in App Store Connect')
+      return
+    }
+
+    core.info(
+      `Revoking certificate ${matchingCert.id} (${matchingCert.attributes.name})`
+    )
+
+    // Revoke from App Store Connect
+    await exec('curl', [
+      '-X',
+      'DELETE',
+      `https://api.appstoreconnect.apple.com/v1/certificates/${matchingCert.id}`,
+      '-H',
+      `Authorization: Bearer ${token}`,
+    ])
+
+    core.info('Certificate revoked from App Store Connect')
+  } catch (error) {
+    core.warning(`Failed to delete API-created certificate: ${error}`)
   }
 }
 

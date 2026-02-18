@@ -12,7 +12,6 @@ import {
   getIdentity,
   getSchemeFromPackage,
   spawn,
-  trackApiCreatedCertificates,
   verbosity,
   xcselect,
 } from './lib'
@@ -62,24 +61,12 @@ async function main() {
   if (key) {
     const keyPath = await createAppStoreConnectApiKeyFile(key)
     apiKey = await getAppStoreConnectApiKey(keyPath)
-
-    // Track existing certificates before build
-    if (apiKey) {
-      core.info('Tracking API-created certificates')
-      await trackApiCreatedCertificates()
-    }
   }
 
   await configureKeychain()
   await configureProvisioningProfiles()
 
   await build(await getScheme(workspace), workspace, arch, archivePath)
-
-  // Track new certificates after build
-  if (apiKey) {
-    core.info('Tracking API-created certificates')
-    await trackApiCreatedCertificates()
-  }
 
   if (core.getInput('upload-logs') == 'always') {
     await uploadLogs()
