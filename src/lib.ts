@@ -653,36 +653,58 @@ async function deleteApiCreatedCertificates(): Promise<void> {
     await exec('security', ['delete-certificate', '-Z', apiCertHash])
     core.info('Deleted certificate from keychain')
 
-    // Generate JWT token
-    const header = Buffer.from(
-      JSON.stringify({ alg: 'ES256', kid: keyId, typ: 'JWT' })
-    ).toString('base64url')
+    // Generate JWT token - Apple requires ES256 (ECDSA with P-256 and SHA-256)
+    // Reference: https://developer.apple.com/documentation/appstoreconnectapi/generating_tokens_for_api_requests
+    const base64url = (buffer: Buffer): string => {
+      return buffer
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '')
+    }
+
+    const header = base64url(
+      Buffer.from(JSON.stringify({ alg: 'ES256', kid: keyId, typ: 'JWT' }))
+    )
     const now = Math.floor(Date.now() / 1000)
-    const payload = Buffer.from(
-      JSON.stringify({
-        iss: keyIssuerId,
-        iat: now,
-        exp: now + 1200,
-        aud: 'appstoreconnect-v1',
-      })
-    ).toString('base64url')
+    const payload = base64url(
+      Buffer.from(
+        JSON.stringify({
+          iss: keyIssuerId,
+          iat: now,
+          exp: now + 1200, // 20 minutes max per Apple docs
+          aud: 'appstoreconnect-v1',
+        })
+      )
+    )
 
     const message = `${header}.${payload}`
+
+    // Sign with ES256 - openssl outputs DER format by default
     const signResult = spawnSync(
       'openssl',
-      ['dgst', '-sha256', '-sign', keyPath, '-binary'],
+      ['dgst', '-sha256', '-sign', keyPath],
       {
-        input: message,
+        input: Buffer.from(message, 'utf8'),
       }
     )
 
-    if (signResult.error) {
-      core.error(`OpenSSL signing error: ${signResult.error}`)
+    if (signResult.error || signResult.status !== 0) {
+      core.error(
+        `OpenSSL signing error: ${
+          signResult.error || signResult.stderr.toString()
+        }`
+      )
       return
     }
 
-    const signature = signResult.stdout.toString('base64url')
-    const token = `${message}.${signature}`
+    // The signature is in DER format, encode it as base64url
+    const signature = base64url(signResult.stdout)
+    const token = `${header}.${payload}.${signature}`
+
+    core.info(
+      `Generated JWT token (first 50 chars): ${token.substring(0, 50)}...`
+    )
 
     // Get certificates from App Store Connect
     const listOutput = await exec('curl', [
