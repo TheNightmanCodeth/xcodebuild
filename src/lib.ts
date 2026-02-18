@@ -577,10 +577,10 @@ async function deleteApiCreatedCertificates(): Promise<void> {
       '-p',
       'codesigning',
     ])
-    const lines = out.split('\n')
+    const identityLines = out.split('\n')
 
     let apiCertHash: string | null = null
-    for (const line of lines) {
+    for (const line of identityLines) {
       if (line.includes('Created via API')) {
         const match = line.match(/\)\s+([A-F0-9]+)/)
         if (match) {
@@ -687,17 +687,53 @@ async function deleteApiCreatedCertificates(): Promise<void> {
     // Get certificates from App Store Connect
     const listOutput = await exec('curl', [
       '-s',
+      '-w',
+      '\nHTTP_CODE:%{http_code}',
       'https://api.appstoreconnect.apple.com/v1/certificates',
       '-H',
       `Authorization: Bearer ${token}`,
     ])
 
-    const apiResponse = JSON.parse(listOutput) as {
-      data: Array<{
+    const responseParts = listOutput.split('\nHTTP_CODE:')
+    const responseBody = responseParts[0]
+    const httpCode = responseParts[1]?.trim()
+
+    core.info(`API HTTP status: ${httpCode}`)
+    core.info(`API response: ${responseBody.substring(0, 500)}`)
+
+    if (httpCode !== '200') {
+      core.warning(`API request failed with status ${httpCode}`)
+      return
+    }
+
+    let apiResponse: {
+      data?: Array<{
         id: string
         attributes: { serialNumber: string; name: string }
       }>
+      errors?: Array<{ title: string; detail: string }>
     }
+
+    try {
+      apiResponse = JSON.parse(responseBody)
+    } catch (error) {
+      core.warning(`Failed to parse API response: ${error}`)
+      return
+    }
+
+    if (apiResponse.errors) {
+      core.warning(`API errors: ${JSON.stringify(apiResponse.errors)}`)
+      return
+    }
+
+    if (!apiResponse.data || apiResponse.data.length === 0) {
+      core.warning('No certificates found in App Store Connect')
+      return
+    }
+
+    core.info(
+      `Found ${apiResponse.data.length} certificates in App Store Connect`
+    )
 
     // Find matching certificate by serial number
     const matchingCert = apiResponse.data.find((cert) => {
@@ -708,7 +744,9 @@ async function deleteApiCreatedCertificates(): Promise<void> {
     })
 
     if (!matchingCert) {
-      core.warning('Could not find matching certificate in App Store Connect')
+      core.warning(
+        `Could not find certificate with serial ${serialNumber} in App Store Connect`
+      )
       return
     }
 
