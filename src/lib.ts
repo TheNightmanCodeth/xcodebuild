@@ -680,7 +680,7 @@ async function deleteApiCreatedCertificates(): Promise<void> {
 
     const message = `${header}.${payload}`
 
-    // Sign with ES256 - openssl outputs DER format by default
+    // Sign with ES256 - openssl outputs DER format
     const signResult = spawnSync(
       'openssl',
       ['dgst', '-sha256', '-sign', keyPath],
@@ -698,8 +698,33 @@ async function deleteApiCreatedCertificates(): Promise<void> {
       return
     }
 
-    // The signature is in DER format, encode it as base64url
-    const signature = base64url(signResult.stdout)
+    // Convert DER signature to raw R+S format (64 bytes for P-256)
+    // DER format: 0x30 [total-length] 0x02 [r-length] [r-bytes] 0x02 [s-length] [s-bytes]
+    const der = signResult.stdout
+    let offset = 2 // Skip 0x30 and total-length
+    offset++ // Skip 0x02
+    const rLength = der[offset]
+    offset++ // Now at r-bytes start
+    const rBytes = der.slice(offset, offset + rLength)
+
+    offset += rLength // Skip past r-bytes and 0x02
+    offset++ // Skip 0x02
+    const sLength = der[offset]
+    offset++ // Now at s-bytes start
+    const sBytes = der.slice(offset, offset + sLength)
+
+    // R and S must each be exactly 32 bytes for P-256
+    const r =
+      rBytes.length === 33 && rBytes[0] === 0
+        ? rBytes.slice(1)
+        : rBytes.slice(-32)
+    const s =
+      sBytes.length === 33 && sBytes[0] === 0
+        ? sBytes.slice(1)
+        : sBytes.slice(-32)
+
+    const rawSignature = Buffer.concat([r, s])
+    const signature = base64url(rawSignature)
     const token = `${header}.${payload}.${signature}`
 
     core.info(
