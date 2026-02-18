@@ -597,32 +597,52 @@ async function deleteApiCreatedCertificates(): Promise<void> {
 
     core.info(`Found API-created certificate: ${apiCertHash}`)
 
-    // Get serial number from the certificate
-    const certInfo = await exec('security', [
+    // Export certificate in PEM format using SHA-1 hash
+    // The hash from find-identity is SHA-1, we need to find the cert by searching all
+    const allCerts = await exec('security', [
       'find-certificate',
-      '-Z',
-      apiCertHash,
+      '-a',
       '-p',
+      '-Z',
     ])
-    const certPem = certInfo.match(
-      /-----BEGIN CERTIFICATE-----.+-----END CERTIFICATE-----/s
-    )?.[0]
+
+    // Parse to find the certificate with matching SHA-1 hash
+    const certBlocks = allCerts.split('SHA-1 hash:')
+    let certPem: string | null = null
+
+    for (const block of certBlocks) {
+      if (block.includes(apiCertHash)) {
+        const pemMatch = block.match(
+          /(-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----)/m
+        )
+        if (pemMatch) {
+          certPem = pemMatch[1]
+          break
+        }
+      }
+    }
 
     if (!certPem) {
-      core.warning('Could not extract certificate PEM')
+      core.warning('Could not find certificate PEM')
       return
     }
 
-    const serialInfo = await exec(
-      'openssl',
-      ['x509', '-noout', '-serial'],
-      undefined,
-      false
-    )
-    const serialMatch = serialInfo.match(/serial=([A-F0-9]+)/i)
+    // Get serial number using openssl
+    const serialResult = spawnSync('openssl', ['x509', '-noout', '-serial'], {
+      input: certPem,
+    })
+
+    if (serialResult.error || serialResult.status !== 0) {
+      core.warning('Could not extract serial number from certificate')
+      return
+    }
+
+    const serialMatch = serialResult.stdout
+      .toString()
+      .match(/serial=([A-F0-9]+)/i)
 
     if (!serialMatch) {
-      core.warning('Could not extract serial number')
+      core.warning('Could not parse serial number')
       return
     }
 
@@ -648,7 +668,7 @@ async function deleteApiCreatedCertificates(): Promise<void> {
     ).toString('base64url')
 
     const message = `${header}.${payload}`
-    const result = spawnSync(
+    const signResult = spawnSync(
       'openssl',
       ['dgst', '-sha256', '-sign', keyPath, '-binary'],
       {
@@ -656,12 +676,12 @@ async function deleteApiCreatedCertificates(): Promise<void> {
       }
     )
 
-    if (result.error) {
-      core.error(`OpenSSL signing error: ${result.error}`)
+    if (signResult.error) {
+      core.error(`OpenSSL signing error: ${signResult.error}`)
       return
     }
 
-    const signature = result.stdout.toString('base64url')
+    const signature = signResult.stdout.toString('base64url')
     const token = `${message}.${signature}`
 
     // Get certificates from App Store Connect
