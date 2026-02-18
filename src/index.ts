@@ -285,9 +285,11 @@ async function main() {
 }
 
 async function post() {
+  core.info('[DEBUG] Post action started')
   await deleteAppStoreConnectApiKeyFile()
   deleteKeychain()
   deleteProvisioningProfiles()
+  core.info('[DEBUG] Post action completed')
 }
 
 async function run() {
