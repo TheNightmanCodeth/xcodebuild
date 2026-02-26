@@ -1,6 +1,7 @@
 import {
   actionIsTestable,
   createAppStoreConnectApiKeyFile,
+  createCertificateViaApi,
   createKeychain,
   createProvisioningProfiles,
   deleteAppStoreConnectApiKeyFile,
@@ -61,6 +62,15 @@ async function main() {
   if (key) {
     const keyPath = await createAppStoreConnectApiKeyFile(key)
     apiKey = await getAppStoreConnectApiKey(keyPath)
+
+    // Create certificate via API if using API key authentication
+    if (apiKey) {
+      const keyId = core.getInput('authentication-key-id')
+      const keyIssuerId = core.getInput('authentication-key-issuer-id')
+      await core.group('Creating certificate via API', async () => {
+        await createCertificateViaApi(keyPath, keyId, keyIssuerId)
+      })
+    }
   }
 
   await configureKeychain()
