@@ -817,7 +817,11 @@ async function deleteApiCreatedCertificates(): Promise<void> {
     // Get certificates from App Store Connect via SDK
     const client = createAppStoreConnectClient(keyPath, keyId, keyIssuerId)
     const { data: response, error } =
-      await client.api.Certificates.certificatesGetCollection()
+      await client.api.Certificates.certificatesGetCollection({
+        query: {
+          'fields[certificates]': ['certificateContent'],
+        },
+      })
 
     if (error) {
       core.warning(`API error: ${JSON.stringify(error)}`)

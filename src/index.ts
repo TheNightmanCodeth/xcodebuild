@@ -63,8 +63,9 @@ async function main() {
     const keyPath = await createAppStoreConnectApiKeyFile(key)
     apiKey = await getAppStoreConnectApiKey(keyPath)
 
-    // Create certificate via API if using API key authentication
-    if (apiKey) {
+    // Create certificate via API only if not using manual certificate
+    const manualCert = core.getInput('code-sign-certificate')
+    if (apiKey && !manualCert) {
       const keyId = core.getInput('authentication-key-id')
       const keyIssuerId = core.getInput('authentication-key-issuer-id')
       await core.group('Creating certificate via API', async () => {
