@@ -9,6 +9,7 @@
     "@actions/artifact": "^2.0.0",
     "@actions/core": "^1.6.0",
     "@actions/exec": "^1.1.0",
+    "@rage-against-the-pixel/app-store-connect-api": "^4.2.0",
     "semver": "^7.7.1"
   },
   "devDependencies": {

@@ -165,8 +165,6 @@ async function main() {
     core.saveState('apiKeyIssuerId', keyIssuerId)
 
     return [
-      '-allowProvisioningDeviceRegistration',
-      '-allowProvisioningUpdates',
       '-authenticationKeyPath',
       keyPath,
       '-authenticationKeyID',

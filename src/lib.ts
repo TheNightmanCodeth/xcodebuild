@@ -6,6 +6,10 @@ import * as path from 'path'
 import * as fs from 'fs'
 import semver, { Range } from 'semver'
 import type { SemVer } from 'semver'
+import {
+  AppStoreConnectClient,
+  CertificateType,
+} from '@rage-against-the-pixel/app-store-connect-api'
 
 async function mdls(path: string): Promise<SemVer | undefined | null> {
   try {
@@ -545,6 +549,19 @@ export async function createAppStoreConnectApiKeyFile(
   return keyPath
 }
 
+function createAppStoreConnectClient(
+  keyPath: string,
+  keyId: string,
+  keyIssuerId: string
+): AppStoreConnectClient {
+  const privateKey = fs.readFileSync(keyPath, 'utf8')
+  return new AppStoreConnectClient({
+    issuerId: keyIssuerId,
+    privateKeyId: keyId,
+    privateKey,
+  })
+}
+
 export async function createCertificateViaApi(
   keyPath: string,
   keyId: string,
@@ -587,48 +604,34 @@ export async function createCertificateViaApi(
       .replace(/-----END CERTIFICATE REQUEST-----/, '')
       .replace(/\n/g, '')
 
-    // Generate JWT token
-    const token = generateJwtToken(keyPath, keyId, keyIssuerId)
-
-    // Create certificate via API
-    const requestBody = JSON.stringify({
-      data: {
-        type: 'certificates',
-        attributes: {
-          csrContent,
-          certificateType: 'DEVELOPMENT',
+    // Create certificate via SDK
+    const client = createAppStoreConnectClient(keyPath, keyId, keyIssuerId)
+    const { data: response, error } =
+      await client.api.Certificates.certificatesCreateInstance({
+        body: {
+          data: {
+            type: 'certificates',
+            attributes: {
+              csrContent,
+              certificateType: CertificateType.DEVELOPMENT,
+            },
+          },
         },
-      },
-    })
+      })
 
-    const createResult = spawnSync('curl', [
-      '-s',
-      '-X',
-      'POST',
-      'https://api.appstoreconnect.apple.com/v1/certificates',
-      '-H',
-      `Authorization: Bearer ${token}`,
-      '-H',
-      'Content-Type: application/json',
-      '-d',
-      requestBody,
-    ])
-
-    if (createResult.error || createResult.status !== 0) {
-      throw new Error(
-        `Failed to create certificate: ${createResult.stderr.toString()}`
-      )
+    if (error) {
+      throw new Error(`API error: ${JSON.stringify(error)}`)
     }
 
-    const response = JSON.parse(createResult.stdout.toString())
-
-    if (response.errors) {
-      throw new Error(
-        `API error: ${JSON.stringify(response.errors[0] || response.errors)}`
-      )
+    if (!response.data.attributes) {
+      throw new Error('Certificate response missing attributes')
     }
 
     const certContent = response.data.attributes.certificateContent
+    if (!certContent) {
+      throw new Error('Certificate response missing certificateContent')
+    }
+
     core.info(`Certificate created with ID: ${response.data.id}`)
 
     // Save certificate to file
@@ -726,77 +729,6 @@ async function createKeychainForApi(): Promise<void> {
   )
 }
 
-function generateJwtToken(
-  keyPath: string,
-  keyId: string,
-  keyIssuerId: string
-): string {
-  const base64url = (buffer: Buffer): string => {
-    return buffer
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '')
-  }
-
-  const header = base64url(
-    Buffer.from(JSON.stringify({ alg: 'ES256', kid: keyId, typ: 'JWT' }))
-  )
-  const now = Math.floor(Date.now() / 1000)
-  const payload = base64url(
-    Buffer.from(
-      JSON.stringify({
-        iss: keyIssuerId,
-        iat: now,
-        exp: now + 1200,
-        aud: 'appstoreconnect-v1',
-      })
-    )
-  )
-
-  const message = `${header}.${payload}`
-
-  const signResult = spawnSync(
-    'openssl',
-    ['dgst', '-sha256', '-sign', keyPath],
-    { input: Buffer.from(message, 'utf8') }
-  )
-
-  if (signResult.error || signResult.status !== 0) {
-    throw new Error(
-      `OpenSSL signing error: ${
-        signResult.error || signResult.stderr.toString()
-      }`
-    )
-  }
-
-  const der = signResult.stdout
-  let offset = 2
-  offset++
-  const rLength = der[offset]
-  offset++
-  const rBytes = der.slice(offset, offset + rLength)
-
-  offset += rLength
-  offset++
-  const sLength = der[offset]
-  offset++
-  const sBytes = der.slice(offset, offset + sLength)
-
-  const r =
-    rBytes.length === 33 && rBytes[0] === 0
-      ? rBytes.slice(1)
-      : rBytes.slice(-32)
-  const s =
-    sBytes.length === 33 && sBytes[0] === 0
-      ? sBytes.slice(1)
-      : sBytes.slice(-32)
-
-  const rawSignature = Buffer.concat([r, s])
-  const signature = base64url(rawSignature)
-  return `${header}.${payload}.${signature}`
-}
-
 export async function deleteAppStoreConnectApiKeyFile() {
   await deleteApiCreatedCertificates()
 
@@ -841,7 +773,6 @@ async function deleteApiCreatedCertificates(): Promise<void> {
 
     const certBlocks = allCerts.split('SHA-1 hash:')
     let certHash: string | null = null
-    let certPem: string | null = null
 
     for (const block of certBlocks) {
       const pemMatch = block.match(
@@ -866,14 +797,13 @@ async function deleteApiCreatedCertificates(): Promise<void> {
           const hashMatch = block.match(/([A-F0-9]{40})/)
           if (hashMatch) {
             certHash = hashMatch[1]
-            certPem = pem
             break
           }
         }
       }
     }
 
-    if (!certHash || !certPem) {
+    if (!certHash) {
       core.info(`Certificate with CN ${expectedCN} not found in keychain`)
       return
     }
@@ -884,54 +814,29 @@ async function deleteApiCreatedCertificates(): Promise<void> {
     await exec('security', ['delete-certificate', '-Z', certHash])
     core.info('Deleted certificate from keychain')
 
-    // Generate JWT token
-    const token = generateJwtToken(keyPath, keyId, keyIssuerId)
+    // Get certificates from App Store Connect via SDK
+    const client = createAppStoreConnectClient(keyPath, keyId, keyIssuerId)
+    const { data: response, error } =
+      await client.api.Certificates.certificatesGetCollection()
 
-    // Get certificates from App Store Connect
-    const listOutput = await exec('curl', [
-      '-sS',
-      '-w',
-      '\nHTTP_CODE:%{http_code}',
-      'https://api.appstoreconnect.apple.com/v1/certificates',
-      '-H',
-      `Authorization: Bearer ${token}`,
-    ])
-
-    const responseParts = listOutput.split('\nHTTP_CODE:')
-    const responseBody = responseParts[0]
-    const httpCode = responseParts[1]?.trim()
-
-    if (httpCode !== '200') {
-      core.warning(`API request failed with status ${httpCode}`)
+    if (error) {
+      core.warning(`API error: ${JSON.stringify(error)}`)
       return
     }
 
-    const apiResponse: {
-      data?: Array<{
-        id: string
-        attributes: { certificateContent: string; name: string }
-      }>
-      errors?: Array<{ title: string; detail: string }>
-    } = JSON.parse(responseBody)
-
-    if (apiResponse.errors) {
-      core.warning(`API errors: ${JSON.stringify(apiResponse.errors)}`)
-      return
-    }
-
-    if (!apiResponse.data || apiResponse.data.length === 0) {
+    if (!response.data || response.data.length === 0) {
       core.warning('No certificates found in App Store Connect')
       return
     }
 
-    core.info(
-      `Found ${apiResponse.data.length} certificates in App Store Connect`
-    )
+    core.info(`Found ${response.data.length} certificates in App Store Connect`)
 
     // Find matching certificate by CN in certificate content
-    let matchingCert: { id: string; name: string } | null = null
+    let matchingCertId: string | null = null
 
-    for (const cert of apiResponse.data) {
+    for (const cert of response.data) {
+      if (!cert.attributes?.certificateContent) continue
+
       const certContent = Buffer.from(
         cert.attributes.certificateContent,
         'base64'
@@ -948,30 +853,33 @@ async function deleteApiCreatedCertificates(): Promise<void> {
       if (subjectResult.status === 0) {
         const subject = subjectResult.stdout.toString()
         if (subject.includes(`CN = ${expectedCN}`)) {
-          matchingCert = { id: cert.id, name: cert.attributes.name }
+          matchingCertId = cert.id
           break
         }
       }
     }
 
-    if (!matchingCert) {
+    if (!matchingCertId) {
       core.warning(
         `Could not find certificate with CN ${expectedCN} in App Store Connect`
       )
       return
     }
 
-    core.info(`Revoking certificate ${matchingCert.id} (${matchingCert.name})`)
+    core.info(`Revoking certificate ${matchingCertId}`)
 
-    // Revoke from App Store Connect
-    await exec('curl', [
-      '-sS',
-      '-X',
-      'DELETE',
-      `https://api.appstoreconnect.apple.com/v1/certificates/${matchingCert.id}`,
-      '-H',
-      `Authorization: Bearer ${token}`,
-    ])
+    // Revoke from App Store Connect via SDK
+    const { error: deleteError } =
+      await client.api.Certificates.certificatesDeleteInstance({
+        path: { id: matchingCertId },
+      })
+
+    if (deleteError) {
+      core.warning(
+        `Failed to revoke certificate: ${JSON.stringify(deleteError)}`
+      )
+      return
+    }
 
     core.info('Certificate revoked from App Store Connect')
   } catch (error) {
